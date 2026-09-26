@@ -381,6 +381,68 @@ textarea:focus, input[type="text"]:focus {
   margin-top: 12px;
 }
 
+.window-box {
+  margin-top: 22px;
+  border-top: 2px solid var(--line);
+  padding-top: 14px;
+}
+
+.window-result {
+  margin-top: 12px;
+}
+
+.window-quotes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.window-quote {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffefb;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.1s, background 0.1s;
+}
+
+.window-quote:hover { border-color: var(--accent); }
+
+.window-quote.active {
+  border-color: var(--accent);
+  background: #fff5e6;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.window-quote-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 10px;
+  background: #f3ecdd;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.9rem;
+  font-weight: bold;
+}
+
+.window-quote-head .quote-len {
+  color: var(--muted);
+  font-weight: normal;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.window-quote-text {
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 1.2rem;
+  line-height: 2;
+  min-height: 1.6em;
+}
+
 .rel-edges {
   margin: 0;
   padding: 0;

@@ -30,6 +30,7 @@ let lastEdition = null;
 let lastProv = null;
 let lastRel = null;
 let lastAudit = null;
+let lastWindow = null;
 let editionTimer = null;
 let editionReqId = 0;
 let runToken = 0; // 每次发起对读或清空结果时自增，用于丢弃过期响应
@@ -116,6 +117,7 @@ function clearResults() {
   lastProv = null;
   lastRel = null;
   lastAudit = null;
+  lastWindow = null;
   $("#results").classList.add("hidden");
   $("#provenance-error").classList.add("hidden");
   $("#provenance-error").textContent = "";
@@ -126,6 +128,9 @@ function clearResults() {
   $("#audit-error").classList.add("hidden");
   $("#audit-error").textContent = "";
   $("#audit-result").innerHTML = "";
+  $("#window-error").classList.add("hidden");
+  $("#window-error").textContent = "";
+  $("#window-result").innerHTML = "";
 }
 
 /* ---------- 对读请求 ---------- */
@@ -172,6 +177,7 @@ async function doCollate() {
   lastProv = null;
   lastRel = null;
   lastAudit = null;
+  lastWindow = null;
   renderResult(data);
   scheduleEdition();
 
@@ -194,6 +200,11 @@ async function doCollate() {
   clearAuditError();
   renderAuditPlaceholder("最优对齐路径审计计算中……");
   requestAlignmentAudit(token, base, witnesses);
+
+  // 最短抄本鉴别片段：与待鉴文本无关，随对读一并请求
+  clearWindowError();
+  renderWindowPlaceholder("最短抄本鉴别片段计算中……");
+  requestDistinguishingWindow(token, base, witnesses);
 }
 
 async function requestProvenance(token, base, witnesses, query) {
@@ -837,10 +848,144 @@ function renderAudit(audit) {
   box.appendChild(list);
 }
 
+/* ---------- 最短抄本鉴别片段 ---------- */
+
+async function requestDistinguishingWindow(token, base, witnesses) {
+  let data;
+  try {
+    const resp = await fetch("/api/distinguishing-window", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base, witnesses }),
+    });
+    data = await resp.json();
+    if (!resp.ok) {
+      if (token === runToken) showWindowError(data.detail || "服务器校验失败。");
+      return;
+    }
+  } catch (e) {
+    if (token === runToken) showWindowError("无法连接服务器，请确认后端已启动。");
+    return;
+  }
+  if (token !== runToken) return; // 输入已变化，丢弃过期结果
+  lastWindow = data;
+  renderWindow(data.distinguishing_window);
+}
+
+function showWindowError(msg) {
+  const el = $("#window-error");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  $("#window-result").innerHTML = "";
+}
+
+function clearWindowError() {
+  const el = $("#window-error");
+  el.textContent = "";
+  el.classList.add("hidden");
+}
+
+function renderWindowPlaceholder(msg) {
+  const box = $("#window-result");
+  box.innerHTML = "";
+  const div = document.createElement("div");
+  div.className = "empty";
+  div.textContent = msg;
+  box.appendChild(div);
+}
+
+function windowRange(win) {
+  const s = win.window.start;
+  const e = win.window.end;
+  return s.label === e.label ? s.label : `${s.label}～${e.label}`;
+}
+
+function renderWindow(win) {
+  clearWindowError();
+  const box = $("#window-result");
+  box.innerHTML = "";
+
+  if (!win.decidable) {
+    const div = document.createElement("div");
+    div.className = "empty";
+    const pairs = win.undistinguishable
+      .map((p) => `抄本 ${p.a.index} ${p.a.name} 与抄本 ${p.b.index} ${p.b.name}`)
+      .join("；");
+    div.textContent =
+      `无法鉴别：以下抄本对在整篇均无不同读法——${pairs}。`;
+    box.appendChild(div);
+    return;
+  }
+
+  const bar = document.createElement("div");
+  bar.className = "prov-summary";
+  bar.textContent =
+    `窗口 ${windowRange(win)} · 坐标 ${win.coordinate_count} 处（点击短引文高亮原文）`;
+  box.appendChild(bar);
+
+  const list = document.createElement("div");
+  list.className = "window-quotes";
+  win.quotes.forEach((quote, qi) => {
+    const key = qi === 0 ? "base" : `w${qi - 1}`;
+    const panel = document.createElement("div");
+    panel.className = "window-quote";
+
+    const head = document.createElement("div");
+    head.className = "window-quote-head";
+    const name = document.createElement("span");
+    name.textContent = quote.name;
+    const len = document.createElement("span");
+    len.className = "quote-len";
+    len.textContent = `引文 ${cplen(quote.text)} 码点`;
+    head.append(name, len);
+
+    const body = document.createElement("div");
+    body.className = "window-quote-text";
+    for (const item of quote.items) {
+      const empty = item.span[0] === item.span[1];
+      // 无插入的间隙不占篇幅、不显示；缺字（字符位空读法）以零长标记示出
+      if (empty && item.coordinate.type === "gap") continue;
+      const span = document.createElement("span");
+      span.className = empty ? "ed-read ed-empty" : "ed-read";
+      span.textContent = item.reading;
+      span.title =
+        `${item.coordinate.label}：${readingLabel(item.reading, item.coordinate.type === "char")}
+原文区间：[${item.original_span[0]}, ${item.original_span[1]})`;
+      body.appendChild(span);
+    }
+
+    panel.append(head, body);
+    panel.addEventListener("click", () =>
+      selectWindowQuote(quote, key, panel)
+    );
+    list.appendChild(panel);
+  });
+  box.appendChild(list);
+}
+
+function selectWindowQuote(quote, key, panel) {
+  document.querySelectorAll(".window-quote.active").forEach((el) =>
+    el.classList.remove("active")
+  );
+  document.querySelectorAll(".entry.active").forEach((el) =>
+    el.classList.remove("active")
+  );
+  document.querySelectorAll(".hl").forEach((el) => el.classList.remove("hl"));
+
+  panel.classList.add("active");
+  applySpans(key, quote.items.map((item) => item.original_span));
+
+  const first = document.querySelector(".hl");
+  if (first) first.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+}
+
 /* ---------- 高亮 ---------- */
 
 function selectEntry(entry, data, div) {
   document.querySelectorAll(".entry.active").forEach((el) =>
+    el.classList.remove("active")
+  );
+  document.querySelectorAll(".window-quote.active").forEach((el) =>
     el.classList.remove("active")
   );
   document.querySelectorAll(".hl").forEach((el) => el.classList.remove("hl"));

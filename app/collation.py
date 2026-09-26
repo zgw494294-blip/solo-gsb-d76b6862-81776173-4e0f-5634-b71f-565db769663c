@@ -622,6 +622,167 @@ def alignment_audit(base: str, witnesses: list) -> dict:
     return {"witnesses": results}
 
 
+def distinguishing_window(base: str, witnesses: list) -> dict:
+    """最短抄本鉴别片段：坐标数最少、能区分每一对抄本的连续坐标窗口。
+
+    沿用 align／_witness_readings 的首条最优对齐，把全部坐标按
+    「间隙0、第1字、间隙1、……、第m字、间隙m」排成一列。寻找连续坐标
+    窗口，使每对抄本在窗口内至少有一处读法不同；取坐标数最少的窗口，
+    并列时取起点最早者。若有抄本对在整篇均无不同读法，则无法鉴别，
+    列出这些抄本对。
+
+    返回 {"decidable", "coordinate_count", "window", "undistinguishable",
+    "quotes"}：
+      - 可鉴别时 window 含 start／end 坐标（type／index／label）与
+        coordinate_count（窗口坐标数）；quotes 依窗口坐标顺序给出底本与
+        各抄本的短引文：text 为窗口读法拼成的引文，items 逐坐标含
+        coordinate、reading 与该读法在原文中的码点半开区间 span
+        （[start, end)，空读法保留零长区间）。
+      - 无法鉴别时 window 与 quotes 为空，undistinguishable 逐对列出
+        整篇读法无异的抄本（a／b 含录入序号 index（1 起）与 name，
+        a.index < b.index）。
+    """
+    names = [w["name"] for w in witnesses]
+    nw = len(witnesses)
+    per_witness = [_witness_readings(base, w["text"]) for w in witnesses]
+
+    coords = []  # (coordinate, 底本读法, 底本码点区间, 各抄本读法)
+    for _type, _idx, coordinate, base_reading, base_span in _iter_coordinates(base):
+        if coordinate["type"] == "gap":
+            readings = [pw[1][coordinate["index"]] for pw in per_witness]
+        else:
+            readings = [pw[0][coordinate["index"] - 1] for pw in per_witness]
+        coords.append((coordinate, base_reading, base_span, readings))
+
+    length = len(coords)
+    # diff_at[t]：在坐标 t 上读法不同的抄本对（位掩码，位 i*nw+j 表示 (i, j)）
+    diff_at = []
+    for _coordinate, _br, _base_span, readings in coords:
+        mask = 0
+        for i in range(nw):
+            for j in range(i + 1, nw):
+                if readings[i]["reading"] != readings[j]["reading"]:
+                    mask |= 1 << (i * nw + j)
+        diff_at.append(mask)
+
+    pair_count = nw * (nw - 1) // 2
+    full_mask = 0
+    for i in range(nw):
+        for j in range(i + 1, nw):
+            full_mask |= 1 << (i * nw + j)
+    union_all = 0
+    for mask in diff_at:
+        union_all |= mask
+    missing = full_mask & ~union_all
+    if missing:
+        pairs = []
+        for i in range(nw):
+            for j in range(i + 1, nw):
+                if missing & (1 << (i * nw + j)):
+                    pairs.append(
+                        {
+                            "a": {"index": i + 1, "name": names[i]},
+                            "b": {"index": j + 1, "name": names[j]},
+                        }
+                    )
+        return {
+            "decidable": False,
+            "coordinate_count": 0,
+            "window": None,
+            "undistinguishable": pairs,
+            "quotes": [],
+        }
+
+    # 滑动窗口：对每个右端 right 求最短可行左端 left（覆盖全部抄本对）。
+    # 坐标数严格更小才更新，故坐标数并列时自然保留起点最早者。
+    best = None  # (left, right) 含端点
+    left = 0
+    covered = 0
+    counts = [0] * (nw * nw)
+    for right in range(length):
+        mask = diff_at[right]
+        bit = 0
+        while mask:
+            if mask & 1:
+                counts[bit] += 1
+                if counts[bit] == 1:
+                    covered += 1
+            mask >>= 1
+            bit += 1
+        while covered == pair_count:
+            if best is None or right - left < best[1] - best[0]:
+                best = (left, right)
+            mask = diff_at[left]
+            bit = 0
+            while mask:
+                if mask & 1:
+                    counts[bit] -= 1
+                    if counts[bit] == 0:
+                        covered -= 1
+                mask >>= 1
+                bit += 1
+            left += 1
+
+    start, end = best
+    window_coords = coords[start : end + 1]
+
+    base_items = []
+    pos = 0
+    for coordinate, base_reading, base_span, _readings in window_coords:
+        item_span = [pos, pos + len(base_reading)]
+        pos += len(base_reading)
+        base_items.append(
+            {
+                "coordinate": dict(coordinate),
+                "reading": base_reading,
+                "span": item_span,
+                "original_span": list(base_span),
+            }
+        )
+
+    quotes = [
+        {
+            "name": "底本",
+            "text": "".join(item["reading"] for item in base_items),
+            "items": base_items,
+        }
+    ]
+    for w in range(nw):
+        items = []
+        pos = 0
+        for coordinate, _br, _base_span, readings in window_coords:
+            r = readings[w]
+            item_span = [pos, pos + len(r["reading"])]
+            pos += len(r["reading"])
+            items.append(
+                {
+                    "coordinate": dict(coordinate),
+                    "reading": r["reading"],
+                    "span": item_span,
+                    "original_span": list(r["span"]),
+                }
+            )
+        quotes.append(
+            {
+                "name": names[w],
+                "text": "".join(item["reading"] for item in items),
+                "items": items,
+            }
+        )
+
+    return {
+        "decidable": True,
+        "coordinate_count": end - start + 1,
+        "window": {
+            "start": dict(coords[start][0]),
+            "end": dict(coords[end][0]),
+            "coordinate_count": end - start + 1,
+        },
+        "undistinguishable": [],
+        "quotes": quotes,
+    }
+
+
 def _coord_desc(type_: str, index: int, m: int) -> str:
     if type_ == "char":
         return f"第{index}字"

@@ -1,5 +1,5 @@
 """对齐快照缓存测试：单次计算与命中、LRU 淘汰、同键并发、失败唤醒与
-重试、不同键并行计算、交付视图不可改写缓存正本，以及五个接口在命中、
+重试、不同键并行计算、交付视图不可改写缓存正本，以及六个接口在命中、
 淘汰与并发下的结果一致性。
 
 直接运行：python tests/test_aligncache.py
@@ -202,7 +202,7 @@ W4 = [
 
 
 def _all_results(base, witnesses, query):
-    """五个接口一次全量结果（与 main.py 各端点背后的计算一致）。"""
+    """六个接口一次全量结果（与 main.py 各端点背后的计算一致）。"""
     return {
         "collate": collation.collate(base, witnesses),
         "edition": collation.edition(
@@ -216,6 +216,7 @@ def _all_results(base, witnesses, query):
         "provenance": collation.provenance(base, witnesses, query),
         "relationships": collation.relationships(base, witnesses),
         "audit": collation.alignment_audit(base, witnesses),
+        "window": collation.distinguishing_window(base, witnesses),
     }
 
 
@@ -260,7 +261,7 @@ def test_same_text_different_names_returned_separately():
 
 
 def test_concurrent_endpoints_consistent():
-    # 多线程并发调用五个接口：结果与串行一致
+    # 多线程并发调用六个接口：结果与串行一致
     expected = _all_results(BASE, W4, "天地間人")
     errors = []
 
