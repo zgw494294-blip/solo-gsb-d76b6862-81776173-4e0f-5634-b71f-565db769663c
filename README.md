@@ -6,7 +6,8 @@
 **待鉴文本**做**来源分段**，求总分最低的完整来源路径，并依据抄本间异文构造
 **抄本异文距离树**（最小生成树与逐一剔除鉴别坐标后的边保留情况）；另对每份
 抄本做**最优对齐路径审计**：精确统计最小代价操作路径数，并给出字典序严格
-次小路径与现行首条路径的坐标差别。
+次小路径与现行首条路径的坐标差别；并可求**最短抄本鉴别片段**：使每对抄本
+至少有一处读法不同的最短连续坐标窗口，给出底本与各抄本在窗口内的短引文。
 
 - 后端：Python + FastAPI
 - 前端：原生 HTML / CSS / JavaScript（无构建步骤）
@@ -120,9 +121,22 @@ http://localhost:8000/docs 。
 - 任一录入内容变化或重新对读，旧审计结果立即清空；在途请求的过期响应
   同样作废。
 
+## 最短抄本鉴别片段
+
+- 沿用「开始对读」的同一套对齐结果，把全部坐标按
+  「间隙0、第1字、间隙1、……、第m字、间隙m」排开。
+- 寻找**连续坐标窗口**，使**每对抄本**在窗口内至少有一个坐标读法不同；
+  取**坐标数最少**的窗口，并列时取**起点最早**者。
+- 页面第七区显示窗口首尾坐标与坐标数，并列出底本与各抄本按窗口读法拼成的
+  **短引文**及其在原文中的 Unicode 码点半开区间（`[start, end)`；
+  空读法保留零长区间）；**点击短引文**可在原文对照中高亮对应区间。
+- 若有抄本对在整篇均无不同读法（任何窗口都无法覆盖全部抄本对），
+  显示「无法鉴别」并列出这些抄本对。
+- 任一录入内容变化或重新对读，旧结果立即清空；在途请求的过期响应同样作废。
+
 ## 对齐快照缓存
 
-- 五个接口（对读、校定、来源分段、距离树、路径审计）共享同一**进程内**
+- 六个接口（对读、校定、来源分段、距离树、路径审计、鉴别片段）共享同一**进程内**
   对齐快照缓存：以**原样的 (底本, 文本)** 为键，缓存该次对齐的
   **最小代价表、字典序首条路径及其坐标读法**；路径计数与严格次小路径
   仍基于缓存的代价表逐请求现算，结果与无缓存一致。
@@ -253,21 +267,48 @@ http://localhost:8000/docs 。
     `span`（`[start, end)`）。
 - `/api/alignment-audit` 返回的路径数与坐标差别与页面第六区完全一致。
 
+`POST /api/distinguishing-window`
+
+```json
+{
+  "base": "天地人",
+  "witnesses": [
+    {"name": "甲本", "text": "天地人"},
+    {"name": "乙本", "text": "天地間人"},
+    {"name": "丙本", "text": "天池人"}
+  ]
+}
+```
+
+- 请求体与 `/api/collate` 相同（底本＋抄本），复用同一套输入校验与对齐
+  快照，不合法同样返回 400。
+- 响应含 `base`、`witnesses` 与 `window`：
+  - 可鉴别时 `window.decidable` 为 `true`，含 `coordinate_count`
+    （窗口坐标数）、`start`／`end`（窗口首尾坐标，各含 `type`／`index`／
+    `label`）与 `quotes`：`quotes.base` 与 `quotes.witnesses[]`（附 `name`）
+    各给出按窗口读法拼成的短引文 `text` 及其在原文中的 Unicode 码点
+    半开区间 `span`（`[start, end)`；空读法为零长区间）。
+  - 有抄本对整篇读法都相同时 `window.decidable` 为 `false`，
+    `start`／`end` 为 `null`、`quotes` 为 `null`，
+    `indistinguishable_pairs[]` 按录入顺序列出这些抄本对
+    （`a`／`b` 各含录入序号 `index`（1 起）与 `name`）。
+- `/api/distinguishing-window` 返回的窗口与短引文和页面第七区完全一致。
+
 交互式接口文档见 http://localhost:8000/docs 。
 
 ## 目录结构
 
 ```
 app/
-  main.py            FastAPI 入口与参数校验（/api/collate、/api/edition、/api/provenance、/api/relationships、/api/alignment-audit）
-  collation.py       最小编辑距离对齐 + 异文汇总 + 校定稿拼合 + 待鉴来源分段 + 抄本异文距离树 + 最优对齐路径审计（对齐结果经共享快照缓存取用）
+  main.py            FastAPI 入口与参数校验（/api/collate、/api/edition、/api/provenance、/api/relationships、/api/alignment-audit、/api/distinguishing-window）
+  collation.py       最小编辑距离对齐 + 异文汇总 + 校定稿拼合 + 待鉴来源分段 + 抄本异文距离树 + 最优对齐路径审计 + 最短抄本鉴别片段（对齐结果经共享快照缓存取用）
   aligncache.py      进程内共享对齐快照缓存（(底本, 文本) 为键，8 份 LRU，同键单次计算）
   static/
     index.html       页面（应用入口 http://localhost:8000/）
     style.css        样式
     app.js           前端逻辑
 tests/
-  test_collation.py  对齐、校勘、校定、来源分段、距离树与路径审计测试（python3 tests/test_collation.py）
+  test_collation.py  对齐、校勘、校定、来源分段、距离树、路径审计与鉴别片段测试（python3 tests/test_collation.py）
   test_aligncache.py 对齐快照缓存与缓存下结果一致性测试（python3 tests/test_aligncache.py）
 Dockerfile
 docker-compose.yml   docker compose up --build 即启动应用（端口 8000）

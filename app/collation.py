@@ -726,3 +726,121 @@ def edition(base: str, witnesses: list, selections: list) -> dict:
         "length": pos,
         "coordinates": coordinates,
     }
+
+
+def distinguishing_window(base: str, witnesses: list) -> dict:
+    """最短抄本鉴别片段：覆盖全部抄本对差异的最短连续坐标窗口。
+
+    沿用 align／_witness_readings 的首条最优对齐，把全部坐标按
+    「间隙0、第1字、间隙1、……、第m字、间隙m」排开。寻找连续坐标窗口，
+    使每对抄本在窗口内至少有一个坐标读法不同；取坐标数最少的窗口，
+    并列时取起点最早者。滑动窗口实现：右端点逐坐标推进，左端点单调
+    右移，对每个右端点保留仍覆盖全部抄本对的最靠右左端点，候选按
+    （坐标数, 起点）取舍。
+
+    返回 {"decidable", "coordinate_count", "start", "end", "quotes",
+    "indistinguishable_pairs"}：
+      可鉴别时 start／end 为窗口首尾坐标，coordinate_count 为窗口坐标数；
+      quotes 含底本与各抄本按窗口读法拼成的短引文及其原文 Unicode 码点
+      半开区间——各文本的坐标区间首尾相接，窗口区间即首坐标区间起点到
+      末坐标区间终点，空读法保留零长区间。
+      有抄本对整篇读法都相同（任何窗口都无法鉴别）时 decidable=False，
+      start／end 为 None、quotes 为 None，indistinguishable_pairs 按
+      录入顺序列出这些抄本对（a／b 各含录入序号 index（1 起）与 name）。
+    """
+    names = [w["name"] for w in witnesses]
+    nw = len(witnesses)
+    per_witness = [_witness_readings(base, w["text"]) for w in witnesses]
+
+    coords = []  # 全部坐标，按「间隙0、第1字、……、间隙m」
+    base_readings = []  # 底本在各坐标的读法
+    base_spans = []  # 底本在各坐标的码点半开区间
+    witness_readings = []  # 各坐标下各抄本的读法条目（kind/reading/span）
+    for type_, idx, coordinate, base_reading, base_span in _iter_coordinates(base):
+        coords.append(coordinate)
+        base_readings.append(base_reading)
+        base_spans.append(base_span)
+        if type_ == "gap":
+            witness_readings.append([pw[1][idx] for pw in per_witness])
+        else:
+            witness_readings.append([pw[0][idx - 1] for pw in per_witness])
+
+    n = len(coords)
+    pairs = [(i, j) for i in range(nw) for j in range(i + 1, nw)]
+
+    diffs_at = [[] for _ in range(n)]  # 坐标 -> 在该坐标读法不同的抄本对序号
+    hopeless = []  # 整篇读法都相同的抄本对
+    for pi, (i, j) in enumerate(pairs):
+        differ = False
+        for c in range(n):
+            rs = witness_readings[c]
+            if rs[i]["reading"] != rs[j]["reading"]:
+                diffs_at[c].append(pi)
+                differ = True
+        if not differ:
+            hopeless.append((i, j))
+
+    if hopeless:
+        return {
+            "decidable": False,
+            "coordinate_count": 0,
+            "start": None,
+            "end": None,
+            "quotes": None,
+            "indistinguishable_pairs": [
+                {
+                    "a": {"index": i + 1, "name": names[i]},
+                    "b": {"index": j + 1, "name": names[j]},
+                }
+                for i, j in hopeless
+            ],
+        }
+
+    # 滑动窗口：count 为各抄本对落在当前窗口内的不同读法坐标数，
+    # covered 为窗口内已有不同读法的抄本对数
+    count = [0] * len(pairs)
+    covered = 0
+    best = None  # (坐标数, 起点, 终点)
+    s = 0
+    for e in range(n):
+        for pi in diffs_at[e]:
+            count[pi] += 1
+            if count[pi] == 1:
+                covered += 1
+        while covered == len(pairs):
+            cand = (e - s + 1, s, e)
+            if best is None or cand < best:
+                best = cand
+            for pi in diffs_at[s]:
+                count[pi] -= 1
+                if count[pi] == 0:
+                    covered -= 1
+            s += 1
+
+    _length, ws, we = best
+    return {
+        "decidable": True,
+        "coordinate_count": we - ws + 1,
+        "start": coords[ws],
+        "end": coords[we],
+        "quotes": {
+            "base": {
+                "text": "".join(base_readings[ws:we + 1]),
+                "span": [base_spans[ws][0], base_spans[we][1]],
+            },
+            "witnesses": [
+                {
+                    "name": names[w],
+                    "text": "".join(
+                        witness_readings[c][w]["reading"] for c in range(ws, we + 1)
+                    ),
+                    "span": [
+                        witness_readings[ws][w]["span"][0],
+                        witness_readings[we][w]["span"][1],
+                    ],
+                }
+                for w in range(nw)
+            ],
+        },
+        "indistinguishable_pairs": [],
+    }

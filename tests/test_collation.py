@@ -13,6 +13,7 @@ from app.collation import (  # noqa: E402
     align,
     alignment_audit,
     collate,
+    distinguishing_window,
     edition,
     provenance,
     relationships,
@@ -628,6 +629,124 @@ def test_alignment_audit_per_witness():
     assert res["witnesses"][0]["alternative"] is None
     assert res["witnesses"][1]["path_count"] == "1"
     assert res["witnesses"][1]["alternative"] is None
+
+
+def test_distinguishing_window_basic():
+    # 甲乙仅在间隙2 读法不同，甲丙／甲丁／丙丁仅在第2字不同：
+    # 窗口须同时覆盖第2字与间隙2 → [第2字, 间隙2]，共 2 个坐标
+    res = distinguishing_window("天地人", W)
+    assert res["decidable"] is True
+    assert res["coordinate_count"] == 2
+    assert res["start"] == {"type": "char", "index": 2, "label": "第2字"}
+    assert res["end"] == {"type": "gap", "index": 2, "label": "第2字后间隙"}
+    assert res["indistinguishable_pairs"] == []
+    assert res["quotes"]["base"] == {"text": "地", "span": [1, 2]}
+    quotes = {q["name"]: q for q in res["quotes"]["witnesses"]}
+    assert quotes["甲"] == {"name": "甲", "text": "地", "span": [1, 2]}
+    # 窗口内间隙2 的插入「間」并入乙本短引文
+    assert quotes["乙"] == {"name": "乙", "text": "地間", "span": [1, 3]}
+    assert quotes["丙"] == {"name": "丙", "text": "池", "span": [1, 2]}
+    # 丁本缺字：空读法保留零长区间
+    assert quotes["丁"] == {"name": "丁", "text": "", "span": [1, 1]}
+
+
+def test_distinguishing_window_single_coordinate_earliest_tie():
+    # 两份抄本在第1、2字均不同：最短窗口为单坐标，并列取起点最早者
+    res = distinguishing_window(
+        "ab",
+        [
+            {"name": "甲", "text": "ab"},
+            {"name": "乙", "text": "XX"},
+        ],
+    )
+    assert res["decidable"] is True
+    assert res["coordinate_count"] == 1
+    assert res["start"] == {"type": "char", "index": 1, "label": "第1字"}
+    assert res["end"] == res["start"]
+    assert res["quotes"]["base"] == {"text": "a", "span": [0, 1]}
+    quotes = {q["name"]: q for q in res["quotes"]["witnesses"]}
+    assert quotes["甲"] == {"name": "甲", "text": "a", "span": [0, 1]}
+    assert quotes["乙"] == {"name": "乙", "text": "X", "span": [0, 1]}
+
+
+def test_distinguishing_window_gap_only():
+    # 仅文首间隙读法不同：窗口即间隙0 单坐标；底本与乙本空读法保留零长区间
+    res = distinguishing_window(
+        "中",
+        [
+            {"name": "甲", "text": "前中"},
+            {"name": "乙", "text": "中"},
+        ],
+    )
+    assert res["decidable"] is True
+    assert res["coordinate_count"] == 1
+    assert res["start"] == {"type": "gap", "index": 0, "label": "文首间隙"}
+    assert res["end"] == res["start"]
+    assert res["quotes"]["base"] == {"text": "", "span": [0, 0]}
+    quotes = {q["name"]: q for q in res["quotes"]["witnesses"]}
+    assert quotes["甲"] == {"name": "甲", "text": "前", "span": [0, 1]}
+    assert quotes["乙"] == {"name": "乙", "text": "", "span": [0, 0]}
+
+
+def test_distinguishing_window_spanning_coordinates():
+    # 甲乙仅第1字不同、甲丁仅第3字不同：窗口须自第1字连到第3字，
+    # 途经间隙一并计入，共 5 个坐标
+    res = distinguishing_window(
+        "abc",
+        [
+            {"name": "甲", "text": "abc"},
+            {"name": "乙", "text": "Xbc"},
+            {"name": "丙", "text": "aXc"},
+            {"name": "丁", "text": "abX"},
+        ],
+    )
+    assert res["decidable"] is True
+    assert res["coordinate_count"] == 5
+    assert res["start"] == {"type": "char", "index": 1, "label": "第1字"}
+    assert res["end"] == {"type": "char", "index": 3, "label": "第3字"}
+    assert res["quotes"]["base"] == {"text": "abc", "span": [0, 3]}
+    quotes = {q["name"]: q for q in res["quotes"]["witnesses"]}
+    assert quotes["甲"] == {"name": "甲", "text": "abc", "span": [0, 3]}
+    assert quotes["乙"] == {"name": "乙", "text": "Xbc", "span": [0, 3]}
+    assert quotes["丙"] == {"name": "丙", "text": "aXc", "span": [0, 3]}
+    assert quotes["丁"] == {"name": "丁", "text": "abX", "span": [0, 3]}
+
+
+def test_distinguishing_window_undecidable():
+    # 甲乙读法全篇相同：无法鉴别并列出该抄本对
+    res = distinguishing_window(
+        "天地人",
+        [
+            {"name": "甲", "text": "天地人"},
+            {"name": "乙", "text": "天地人"},
+            {"name": "丙", "text": "天池人"},
+        ],
+    )
+    assert res["decidable"] is False
+    assert res["coordinate_count"] == 0
+    assert res["start"] is None and res["end"] is None
+    assert res["quotes"] is None
+    assert res["indistinguishable_pairs"] == [
+        {"a": {"index": 1, "name": "甲"}, "b": {"index": 2, "name": "乙"}}
+    ]
+
+
+def test_distinguishing_window_undecidable_multiple_pairs():
+    # 甲＝乙、丙＝丁：两对抄本整篇无不同读法，按录入顺序一并列出
+    res = distinguishing_window(
+        "天地人",
+        [
+            {"name": "甲", "text": "天地人"},
+            {"name": "乙", "text": "天地人"},
+            {"name": "丙", "text": "天池人"},
+            {"name": "丁", "text": "天池人"},
+        ],
+    )
+    assert res["decidable"] is False
+    pairs = [(p["a"]["name"], p["b"]["name"]) for p in res["indistinguishable_pairs"]]
+    assert pairs == [("甲", "乙"), ("丙", "丁")]
+    assert [p["a"]["index"] for p in res["indistinguishable_pairs"]] == [1, 3]
+    assert [p["b"]["index"] for p in res["indistinguishable_pairs"]] == [2, 4]
 
 
 def run_all():

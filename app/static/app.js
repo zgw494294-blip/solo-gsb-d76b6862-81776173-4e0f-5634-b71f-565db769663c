@@ -30,6 +30,7 @@ let lastEdition = null;
 let lastProv = null;
 let lastRel = null;
 let lastAudit = null;
+let lastWin = null;
 let editionTimer = null;
 let editionReqId = 0;
 let runToken = 0; // 每次发起对读或清空结果时自增，用于丢弃过期响应
@@ -116,6 +117,7 @@ function clearResults() {
   lastProv = null;
   lastRel = null;
   lastAudit = null;
+  lastWin = null;
   $("#results").classList.add("hidden");
   $("#provenance-error").classList.add("hidden");
   $("#provenance-error").textContent = "";
@@ -126,6 +128,9 @@ function clearResults() {
   $("#audit-error").classList.add("hidden");
   $("#audit-error").textContent = "";
   $("#audit-result").innerHTML = "";
+  $("#window-error").classList.add("hidden");
+  $("#window-error").textContent = "";
+  $("#window-result").innerHTML = "";
 }
 
 /* ---------- 对读请求 ---------- */
@@ -172,6 +177,7 @@ async function doCollate() {
   lastProv = null;
   lastRel = null;
   lastAudit = null;
+  lastWin = null;
   renderResult(data);
   scheduleEdition();
 
@@ -194,6 +200,11 @@ async function doCollate() {
   clearAuditError();
   renderAuditPlaceholder("最优对齐路径审计计算中……");
   requestAlignmentAudit(token, base, witnesses);
+
+  // 最短抄本鉴别片段：与待鉴文本无关，随对读一并请求
+  clearWinError();
+  renderWinPlaceholder("最短抄本鉴别片段计算中……");
+  requestWindow(token, base, witnesses);
 }
 
 async function requestProvenance(token, base, witnesses, query) {
@@ -837,10 +848,141 @@ function renderAudit(audit) {
   box.appendChild(list);
 }
 
+/* ---------- 最短抄本鉴别片段 ---------- */
+
+async function requestWindow(token, base, witnesses) {
+  let data;
+  try {
+    const resp = await fetch("/api/distinguishing-window", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base, witnesses }),
+    });
+    data = await resp.json();
+    if (!resp.ok) {
+      if (token === runToken) showWinError(data.detail || "服务器校验失败。");
+      return;
+    }
+  } catch (e) {
+    if (token === runToken) showWinError("无法连接服务器，请确认后端已启动。");
+    return;
+  }
+  if (token !== runToken) return; // 输入已变化，丢弃过期结果
+  lastWin = data;
+  renderWindow(data.window);
+}
+
+function showWinError(msg) {
+  const el = $("#window-error");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  $("#window-result").innerHTML = "";
+}
+
+function clearWinError() {
+  const el = $("#window-error");
+  el.textContent = "";
+  el.classList.add("hidden");
+}
+
+function renderWinPlaceholder(msg) {
+  const box = $("#window-result");
+  box.innerHTML = "";
+  const div = document.createElement("div");
+  div.className = "empty";
+  div.textContent = msg;
+  box.appendChild(div);
+}
+
+function renderWindow(win) {
+  clearWinError();
+  const box = $("#window-result");
+  box.innerHTML = "";
+
+  if (!win.decidable) {
+    const div = document.createElement("div");
+    div.className = "empty";
+    div.textContent =
+      "无法鉴别：以下抄本对在整篇均无不同读法，任何窗口都无法覆盖全部抄本对。";
+    box.appendChild(div);
+    const list = document.createElement("ol");
+    list.className = "rel-edges";
+    for (const p of win.indistinguishable_pairs) {
+      const li = document.createElement("li");
+      li.className = "rel-edge";
+      const head = document.createElement("div");
+      head.className = "rel-edge-head static";
+      const span = document.createElement("span");
+      span.className = "rel-endpoints";
+      span.textContent = `${endpointLabel(p.a)} — ${endpointLabel(p.b)}`;
+      head.appendChild(span);
+      li.appendChild(head);
+      list.appendChild(li);
+    }
+    box.appendChild(list);
+    return;
+  }
+
+  const bar = document.createElement("div");
+  bar.className = "prov-summary";
+  const range = win.start.label === win.end.label
+    ? win.start.label
+    : `${win.start.label}～${win.end.label}`;
+  bar.textContent = `窗口 ${range} · 共 ${win.coordinate_count} 个坐标`;
+  box.appendChild(bar);
+
+  const list = document.createElement("div");
+  list.className = "win-quotes";
+  const rows = [
+    { key: "base", name: "底本", quote: win.quotes.base },
+    ...win.quotes.witnesses.map((q, i) => ({
+      key: `w${i}`,
+      name: q.name,
+      quote: q,
+    })),
+  ];
+  for (const row of rows) {
+    const div = document.createElement("div");
+    div.className = "win-quote";
+    const name = document.createElement("span");
+    name.className = "win-quote-name";
+    name.textContent = row.name;
+    const text = document.createElement("span");
+    text.className = "win-quote-text";
+    text.textContent = row.quote.text === "" ? "（空）" : `「${row.quote.text}」`;
+    const span = document.createElement("span");
+    span.className = "win-quote-span";
+    span.textContent = `[${row.quote.span[0]}, ${row.quote.span[1]})`;
+    div.append(name, text, span);
+    div.addEventListener("click", () => selectWinQuote(row, div));
+    list.appendChild(div);
+  }
+  box.appendChild(list);
+}
+
+function selectWinQuote(row, div) {
+  document.querySelectorAll(".entry.active").forEach((el) =>
+    el.classList.remove("active")
+  );
+  document.querySelectorAll(".win-quote.active").forEach((el) =>
+    el.classList.remove("active")
+  );
+  document.querySelectorAll(".hl").forEach((el) => el.classList.remove("hl"));
+
+  div.classList.add("active");
+  applySpans(row.key, [row.quote.span]);
+
+  const first = document.querySelector(".hl");
+  if (first) first.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+}
+
 /* ---------- 高亮 ---------- */
 
 function selectEntry(entry, data, div) {
   document.querySelectorAll(".entry.active").forEach((el) =>
+    el.classList.remove("active")
+  );
+  document.querySelectorAll(".win-quote.active").forEach((el) =>
     el.classList.remove("active")
   );
   document.querySelectorAll(".hl").forEach((el) => el.classList.remove("hl"));

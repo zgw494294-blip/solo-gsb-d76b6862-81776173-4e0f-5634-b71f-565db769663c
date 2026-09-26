@@ -10,6 +10,7 @@ from .collation import (
     EditionError,
     alignment_audit,
     collate,
+    distinguishing_window,
     edition,
     provenance,
     relationships,
@@ -49,6 +50,11 @@ class RelationshipsRequest(BaseModel):
 
 
 class AlignmentAuditRequest(BaseModel):
+    base: str
+    witnesses: list[WitnessIn]
+
+
+class DistinguishingWindowRequest(BaseModel):
     base: str
     witnesses: list[WitnessIn]
 
@@ -163,6 +169,20 @@ def api_alignment_audit(req: AlignmentAuditRequest):
             for w in witnesses
         ],
         "audit": result,
+    }
+
+
+@app.post("/api/distinguishing-window")
+def api_distinguishing_window(req: DistinguishingWindowRequest):
+    witnesses = _validate(req.base, req.witnesses)
+    result = distinguishing_window(req.base, witnesses)
+    return {
+        "base": {"text": req.base, "length": len(req.base)},
+        "witnesses": [
+            {"name": w["name"], "text": w["text"], "length": len(w["text"])}
+            for w in witnesses
+        ],
+        "window": result,
     }
 
 
